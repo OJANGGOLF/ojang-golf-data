@@ -3,7 +3,7 @@
 import csv, json, re, os, sys
 from html.parser import HTMLParser
 from urllib.request import Request, urlopen
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -88,7 +88,7 @@ def named_pars_from_visible(visible, courses):
             hole=re.search(r'(?i)\bHole\b\s*1\s+2\s+3\s+4\s+5\s+6\s+7\s+8\s+9\b',tail)
             if not hole:continue
             section=tail[hole.end():]
-            par=re.search(r'(?i)\bPar\b\s+([3-6](?:\s+[3-6]){8})(?!\s*[3-6])',section)
+            par=re.search(r'(?i)\bPar\b\s+([3-6](?:\s+[3-6]){8})(?=\s|$)',section)
             if not par:continue
             # Do not associate PAR beyond the next named course label.
             intervening=tail[:hole.end()+par.start()]
@@ -115,18 +115,69 @@ def diagnose(visible, tables):
     return f'HTML 표 {len(tables)}개 / 텍스트 토큰 {len(visible)}개; 예시: '+(' | '.join(samples[:4]) if samples else '키워드 미발견')
 
 def fetch(url):
+    """Return HTML plus limited response metadata for troubleshooting."""
     parsed=urlparse(url)
-    if parsed.scheme!='https' or not parsed.netloc:raise ValueError('HTTPS only')
-    req=Request(url,headers={'User-Agent':'Mozilla/5.0 (compatible; OJANG-Golf-Review/2.0)','Accept':'text/html'})
+    if parsed.scheme!='https' or parsed.hostname not in ('www.goldlake.co.kr','goldlake.co.kr','www.kjcc.co.kr'):
+        raise ValueError('Unapproved HTTPS source')
+    req=Request(url,headers={
+        'User-Agent':'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36',
+        'Accept':'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language':'ko-KR,ko;q=0.9,en-US;q=0.7',
+    })
     with urlopen(req,timeout=25) as resp:
+        final=resp.geturl()
+        if urlparse(final).hostname not in ('www.goldlake.co.kr','goldlake.co.kr','www.kjcc.co.kr'):
+            raise ValueError('Redirected outside approved domain')
         data=resp.read(3_000_001)
         if len(data)>3_000_000:raise ValueError('Page too large')
         charset=resp.headers.get_content_charset()
-    if charset:return data.decode(charset,errors='replace')
-    for enc in ('utf-8','cp949'):
-        try:return data.decode(enc)
-        except UnicodeDecodeError:pass
-    return data.decode('utf-8',errors='replace')
+        code=resp.status
+        ctype=resp.headers.get('Content-Type','')
+    if charset:
+        page=data.decode(charset,errors='replace')
+    else:
+        page=None
+        for enc in ('utf-8','cp949'):
+            try:page=data.decode(enc);break
+            except UnicodeDecodeError:pass
+        if page is None:page=data.decode('utf-8',errors='replace')
+    return page,{'code':code,'final':final,'bytes':len(data),'type':ctype}
+
+def variants(url):
+    """Only the two known official Goldlake hostnames, never arbitrary mirrors."""
+    parsed=urlparse(url)
+    result=[url]
+    if parsed.hostname=='www.goldlake.co.kr':
+        result.append(urlunparse(parsed._replace(netloc='goldlake.co.kr')))
+    elif parsed.hostname=='goldlake.co.kr':
+        result.append(urlunparse(parsed._replace(netloc='www.goldlake.co.kr')))
+    return result
+
+def response_diagnostic(doc, meta):
+    text=' '.join(doc.visible)
+    title=re.search(r'<title[^>]*>(.*?)</title\s*>',doc.raw,re.I|re.S)
+    title=' '.join(re.sub(r'<[^>]*>','',title.group(1)).split())[:90] if title else '(없음)'
+    preview=' '.join(text.split())[:110] or '(표시 텍스트 없음)'
+    markers=','.join(k for k in ('Gold','Lake','Hill','Valley','Hole','Par') if re.search(r'(?i)\b'+k+r'\b',text)) or '없음'
+    return f"HTTP {meta['code']} / {meta['bytes']}바이트 / 표 {len(doc.tables)}개 / 코스표 키워드 {markers} / 제목 {title!r} / 첫 문장 {preview!r} / 최종주소 {meta['final']}"
+
+def extract_page(doc,courses,known,club):
+    """Require named course blocks, or exact-match verified order fallback."""
+    named=named_pars_from_visible(doc.visible,courses)
+    if named is not None:
+        return [named[c] for c in courses],'코스명 연결 분석'
+    extracted=[p for t in doc.tables if (p:=parse_par_table(t)) is not None]
+    method='표 순서 (기존 등록 PAR 교차검증)'
+    if len(extracted)!=len(courses):
+        fallback=fallback_pars(doc.visible)
+        if len(fallback)==len(courses):
+            extracted=fallback;method='텍스트 순서 (기존 등록 PAR 교차검증)'
+    if len(extracted)==len(courses):
+        for course,pars in zip(courses,extracted):
+            old=known.get((club,course))
+            if old is None or [int(old[f'PAR{i}']) for i in range(1,10)]!=pars:
+                return [],'불확실한 코스 대응으로 보류'
+    return extracted,method
 
 def main():
     with (ROOT/'verified_courses.csv').open(encoding='utf-8-sig',newline='') as f:rows=list(csv.DictReader(f))
@@ -137,30 +188,23 @@ def main():
     for item in config['sources']:
         club=item['club'];url=item['url'];courses=item['courses'];region=item['region']
         try:
-            doc=Tables();doc.feed(fetch(url))
-            # Prefer explicit course-name association; never assume table order.
-            named=named_pars_from_visible(doc.visible,courses)
-            if named is not None:
-                extracted=[named[c] for c in courses]
-                method='코스명 연결 분석'
-            else:
-                extracted=[p for t in doc.tables if (p:=parse_par_table(t)) is not None]
-                method='표 순서 (기존 등록 PAR 교차검증 필수)'
-                if len(extracted)!=len(courses):
-                    fallback=fallback_pars(doc.visible)
-                    if len(fallback)==len(courses):extracted=fallback;method='텍스트 순서 (기존 등록 PAR 교차검증 필수)'
-                if len(extracted)==len(courses):
-                    # Prevent silent mis-association: only use order-based extraction
-                    # if every course already exists and its PAR matches exactly.
-                    matched=True
-                    for course,pars in zip(courses,extracted):
-                        old=known.get((club,course))
-                        if old is None or [int(old[f'PAR{i}']) for i in range(1,10)]!=pars:
-                            matched=False;break
-                    if not matched:extracted=[]
+            extracted=[];method='';diagnostics=[]
+            for candidate_url in variants(url):
+                try:
+                    page,meta=fetch(candidate_url)
+                    doc=Tables();doc.raw=page;doc.feed(page)
+                    found,found_method=extract_page(doc,courses,known,club)
+                    diagnostics.append(response_diagnostic(doc,meta))
+                    if len(found)==len(courses):
+                        extracted=found;method=found_method
+                        # A different hostname is still the same official club domain.
+                        if candidate_url!=url:method+=' (공식 대체 호스트)'
+                        break
+                except Exception as variant_error:
+                    diagnostics.append(candidate_url+': '+type(variant_error).__name__)
             if len(extracted)!=len(courses):
                 status.append(f'{club}: 보류 (확정 추출 {len(extracted)}개 / 설정 {len(courses)}개)')
-                status.append(f'{club} 진단: {diagnose(doc.visible,doc.tables)}')
+                status.extend(f'{club} 응답 {n}: {info}' for n,info in enumerate(diagnostics,1))
                 continue
             for course,pars in zip(courses,extracted):
                 old=known.get((club,course))
