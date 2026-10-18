@@ -1,0 +1,16 @@
+{
+  "sources": {
+    "https://www.goldlake.co.kr/course/course01.asp": {
+      "clubs": [
+        "골드레이크CC"
+      ],
+      "sha256": "e150fa71592613ec305e1094ce962e22b27072ace9e5909955db747d83d8331b"
+    },
+    "https://www.kjcc.co.kr/html/course01.asp": {
+      "clubs": [
+        "광주컨트리클럽"
+      ],
+      "sha256": "ae018a270ee0c1b58573a1e8ba67ab99d6219c24d5b9e5cf7b82f1df2582c7a9"
+    }
+  }
+}
