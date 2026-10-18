@@ -10,7 +10,6 @@ on:
 permissions:
   contents: write
 
-# Avoid two workflow runs trying to push the same branch at once.
 concurrency:
   group: golf-catalog-main
   cancel-in-progress: false
@@ -38,6 +37,40 @@ jobs:
           name: course-candidates
           path: course_candidates.csv
           retention-days: 14
+      - name: Check new course candidates (review only)
+        id: new_course_review
+        continue-on-error: true
+        run: python check_new_course_candidates.py
+      - name: Upload new course review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: new-course-review
+          path: new_course_review.csv
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Summarize new course review
+        if: always()
+        shell: bash
+        run: |
+          echo '## 신규 골프장 후보 검사' >> "$GITHUB_STEP_SUMMARY"
+          if [ -f new_course_review.csv ]; then
+            python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import csv
+          with open('new_course_review.csv', encoding='utf-8-sig', newline='') as f:
+              rows = list(csv.DictReader(f))
+          print('| 골프장 / 코스 | 검사 상태 | 메모 |')
+          print('|---|---|---|')
+          for r in rows:
+              name = (r['골프장명'] + ' / ' + r['코스명']).replace('|', '/')
+              status = r['상태'].replace('|', '/')
+              note = r['검사메모'].replace('|', '/').replace('\n', ' ')[:180]
+              print(f'| {name} | {status} | {note} |')
+          print('\n**검토 전용:** 기존 PAR 및 공개 카탈로그는 수정하지 않습니다.')
+          PY
+          else
+            echo '검사 결과 파일이 생성되지 않았습니다. 실행 로그를 확인하세요.' >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Commit changed catalog and monitoring state
         shell: bash
         run: |
