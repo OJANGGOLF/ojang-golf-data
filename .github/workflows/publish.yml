@@ -20,6 +20,14 @@ jobs:
         run: python build_catalog.py
       - name: Check official source pages
         run: python monitor_courses.py
+      - name: Extract official PAR candidates (review only)
+        run: python extract_course_candidates.py
+      - name: Upload review candidates
+        uses: actions/upload-artifact@v4
+        with:
+          name: course-candidates
+          path: course_candidates.csv
+          retention-days: 14
       - name: Commit changed catalog and monitoring state
         run: |
           git add catalog.json course_page_state.json
