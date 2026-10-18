@@ -1,0 +1,6 @@
+{
+  "sources": [
+    {"club":"광주컨트리클럽","region":"전남","url":"https://www.kjcc.co.kr/html/course01.asp","courses":["동악","섬진","설산"]},
+    {"club":"골드레이크CC","region":"전남","url":"https://www.goldlake.co.kr/course/course01.asp","courses":["골드","레이크","힐","밸리"]}
+  ]
+}
