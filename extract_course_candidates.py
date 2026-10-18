@@ -144,13 +144,22 @@ def fetch(url):
     return page,{'code':code,'final':final,'bytes':len(data),'type':ctype}
 
 def variants(url):
-    """Only the two known official Goldlake hostnames, never arbitrary mirrors."""
+    """Probe approved official Goldlake course-page routes, never mirrors.
+
+    The legacy .asp path can redirect to /index on GitHub runners. The
+    extensionless /course/course01 is independently indexed as an official
+    course page, so try that path too. This is diagnostic, not a bypass.
+    """
     parsed=urlparse(url)
-    result=[url]
-    if parsed.hostname=='www.goldlake.co.kr':
-        result.append(urlunparse(parsed._replace(netloc='goldlake.co.kr')))
-    elif parsed.hostname=='goldlake.co.kr':
-        result.append(urlunparse(parsed._replace(netloc='www.goldlake.co.kr')))
+    if parsed.hostname not in ('www.goldlake.co.kr','goldlake.co.kr'):
+        return [url]
+    hosts=('www.goldlake.co.kr','goldlake.co.kr')
+    paths=('/course/course01','/course/course01.asp')
+    result=[]
+    for host in hosts:
+        for path in paths:
+            candidate=urlunparse(parsed._replace(netloc=host,path=path,params='',query='',fragment=''))
+            if candidate not in result:result.append(candidate)
     return result
 
 def response_diagnostic(doc, meta):
@@ -193,8 +202,12 @@ def main():
                 try:
                     page,meta=fetch(candidate_url)
                     doc=Tables();doc.raw=page;doc.feed(page)
+                    diagnostics.append(candidate_url+' => '+response_diagnostic(doc,meta))
+                    final_path=urlparse(meta['final']).path.rstrip('/')
+                    if club=='골드레이크CC' and final_path not in ('/course/course01','/course/course01.asp'):
+                        diagnostics[-1]+=' [보류: 코스제원 이외 주소로 이동]'
+                        continue
                     found,found_method=extract_page(doc,courses,known,club)
-                    diagnostics.append(response_diagnostic(doc,meta))
                     if len(found)==len(courses):
                         extracted=found;method=found_method
                         # A different hostname is still the same official club domain.
